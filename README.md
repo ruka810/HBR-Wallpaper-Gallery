@@ -10,10 +10,11 @@
 
 ## 预览
 
-| 角色卡 | 剧情 CG |
+| 角色卡 | 角色卡 |
 | :---: | :---: |
 | ![card](docs/preview/card_1972.png) | ![card](docs/preview/card_3248.png) |
 | ![card](docs/preview/card_281.png) | ![card](docs/preview/card_416.png) |
+| ![card](docs/preview/card_1610.png) | ![card](docs/preview/card_823.png) |
 
 ---
 
@@ -51,7 +52,7 @@
    ```
 
 3. 双击 **`运行壁纸图库.bat`**，浏览器会自动打开图库页面。
-   首次运行需要扫描游戏索引，会稍慢（几分钟），之后走缓存很快。
+   首次运行需要扫描游戏索引（通常几秒到一分钟），之后走缓存几乎瞬间打开。
 
 > 工具会自动在 Steam 安装库里查找游戏资源目录，通常无需手动配置。
 
