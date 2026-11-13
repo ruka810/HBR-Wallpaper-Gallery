@@ -1,0 +1,12 @@
+# 本机数据 / 大文件，不纳入版本控制
+__pycache__/
+*.pyc
+hbr_config.json
+hbr_index.json
+hbr_index_server.json
+hbr_info.json
+hbr_selection.json
+hbr_progress.txt
+hbr_thumbs/
+HBR_Wallpapers/
+remote_q/
