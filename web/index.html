@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/app.css">
+  <script src="/app.js" defer></script>
+  <title>HBR 壁纸图库</title>
+</head>
+<body>
+  <header class="app-head">
+    <button id="nav-toggle" class="icon nav-toggle" type="button" aria-label="分类和收藏夹" aria-expanded="false" aria-controls="sidebar">☰</button>
+    <div class="brand"><span class="brand-mark" aria-hidden="true">H</span><div>HBR 壁纸图库<small>HEAVEN BURNS RED</small></div></div>
+    <div class="head-actions">
+      <button id="bundle-open" type="button" class="quiet"><span id="status-dot" aria-hidden="true"></span>Bundle 状态</button>
+      <button id="refresh" type="button" title="下载待补齐的 Bundle、清理重复副本并同步缩略图">更新 Bundle 状态</button>
+      <button id="thumb-status-open" type="button">缩略图状态</button>
+      <button id="settings-open" type="button" aria-label="设置" title="设置" class="icon">⚙</button>
+    </div>
+  </header>
+  <div class="workspace">
+    <aside id="sidebar" aria-label="图库导航">
+      <section>
+        <h2>图库</h2>
+        <nav id="categories" aria-label="图片分类"></nav>
+      </section>
+      <section class="collections">
+        <div class="section-head"><h2>收藏夹</h2><button id="new-folder" type="button" class="icon quiet" aria-label="新建收藏夹" title="新建收藏夹">＋</button></div>
+        <nav id="folders" aria-label="收藏夹"></nav>
+      </section>
+    </aside>
+    <main>
+      <div class="content-head">
+        <div id="location" class="location"></div>
+        <div class="title-row"><h1 id="gallery-title">剧情 CG</h1><div id="folder-actions" hidden>
+          <button id="rename-folder" type="button" class="quiet">重命名</button>
+          <button id="delete-folder" type="button" class="quiet">删除收藏夹</button>
+        </div></div>
+        <div class="filters">
+          <label class="search"><span aria-hidden="true">⌕</span><input id="search" type="search" placeholder="搜索图片、章节、语言" aria-label="搜索图片、章节、语言"></label>
+          <select id="availability" aria-label="资源状态">
+            <option value="all">全部资源状态</option><option value="local">本机可读</option>
+            <option value="remote">可从服务器获取</option><option value="missing">暂不可用</option>
+            <option value="failed">缩略图读取失败</option>
+          </select>
+          <select id="sort" aria-label="排序">
+            <option value="category">分类排序</option><option value="name">名称排序</option>
+            <option value="new">最近新增</option><option value="size">分辨率</option>
+          </select>
+          <label class="filter-check"><input type="checkbox" id="wallpaper"> 1080p 以上</label>
+        </div>
+        <div class="results-line"><p id="result-count" aria-live="polite"></p><button id="select-filtered" type="button" class="quiet">全选筛选结果</button></div>
+      </div>
+      <div id="task-strip" class="task-strip" role="status" hidden>
+        <div><strong id="task-message"></strong><progress id="task-progress" aria-label="任务进度" hidden></progress></div>
+        <button id="task-detail" type="button" class="quiet">查看详情</button>
+      </div>
+      <div id="grid-scroll" class="grid-scroll" aria-label="图片列表">
+        <div id="empty" class="empty" role="status">正在载入图库…</div>
+        <div id="grid" aria-label="图片网格"></div>
+      </div>
+      <div id="selection-bar" class="selection-bar" hidden>
+        <div><strong id="selection-count"></strong><button id="clear-selection" type="button" class="quiet">清空已选</button></div>
+        <div class="batch-actions">
+          <button id="batch-preview" type="button">批量加载预览</button>
+          <button id="add-to-folder" type="button">加入收藏夹</button>
+          <button id="remove-from-folder" type="button" class="quiet" hidden>从收藏夹移除</button>
+          <button id="batch-save" type="button" class="primary">批量保存</button>
+        </div>
+      </div>
+    </main>
+  </div>
+  <div id="toast" class="toast" role="status" hidden></div>
+
+  <dialog id="settings-dialog" aria-labelledby="settings-title">
+    <div class="dialog-head"><h2 id="settings-title">设置</h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
+    <label for="output-path">图片保存目录</label>
+    <div class="directory"><input id="output-path" type="text" spellcheck="false" autocomplete="off"><button id="pick-folder" type="button">浏览…</button></div>
+    <p class="subtle">图片按分类存为 PNG。单张和批量保存共用此目录。</p>
+    <p class="form-error" id="settings-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button id="reset-output" type="button" class="quiet">恢复默认</button><button id="open-output" type="button">打开已设置目录</button><button id="save-output" type="button" class="primary">保存设置</button></div>
+  </dialog>
+
+  <dialog id="bundle-dialog" aria-labelledby="bundle-title">
+    <div class="dialog-head"><h2 id="bundle-title">Bundle 状态</h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
+    <dl id="bundle-counts" class="bundle-counts"></dl>
+    <div id="last-check" class="check-summary"></div>
+    <div class="dialog-actions"><button id="refresh-dialog" type="button" class="primary">更新 Bundle 状态</button></div>
+  </dialog>
+
+  <dialog id="thumb-status-dialog" aria-labelledby="thumb-status-title">
+    <div class="dialog-head"><h2 id="thumb-status-title">缩略图状态</h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
+    <dl id="thumb-counts" class="bundle-counts"></dl>
+    <div id="thumb-last-sync" class="check-summary"></div>
+    <div id="thumb-sync-progress" class="check-summary" hidden>
+      <p id="thumb-sync-message" role="status"></p>
+      <progress id="thumb-progress" aria-label="缩略图补全进度"></progress>
+    </div>
+    <p id="thumb-status-error" class="form-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button id="sync-thumbs" type="button" class="primary" disabled>一键补全缩略图</button></div>
+  </dialog>
+
+  <dialog id="folder-dialog" aria-labelledby="folder-title">
+    <div class="dialog-head"><h2 id="folder-title"></h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
+    <form id="folder-form">
+      <label for="folder-name">收藏夹名称</label>
+      <input id="folder-name" type="text" required maxlength="60" autocomplete="off">
+      <p class="form-error" id="folder-error" role="alert" hidden></p>
+      <div class="dialog-actions"><button type="button" class="close">取消</button><button type="submit" class="primary">保存</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="add-dialog" aria-labelledby="add-title">
+    <div class="dialog-head"><h2 id="add-title">加入收藏夹</h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
+    <div id="add-folders" class="folder-options"></div>
+    <p class="form-error" id="add-error" role="alert" hidden></p>
+    <div class="dialog-actions"><button id="add-new-folder" type="button">新建收藏夹</button><button id="apply-folders" type="button" class="primary">加入</button></div>
+  </dialog>
+
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title">
+    <div class="dialog-head"><h2 id="confirm-title"></h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
+    <p id="confirm-message"></p>
+    <div class="dialog-actions"><button type="button" class="close">取消</button><button id="confirm-yes" type="button" class="primary">继续</button></div>
+  </dialog>
+
+  <dialog id="task-dialog" aria-labelledby="task-title">
+    <div class="dialog-head"><h2 id="task-title">任务详情</h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
+    <div id="task-body"></div>
+    <div class="dialog-actions">
+      <button id="open-task-output" type="button" hidden>打开保存目录</button>
+      <button id="retry" type="button" class="primary" hidden>重试失败项</button>
+    </div>
+  </dialog>
+
+  <dialog id="viewer" aria-labelledby="viewer-title">
+    <div class="viewer-head">
+      <div><h2 id="viewer-title"></h2><p id="viewer-meta"></p></div>
+      <button type="button" class="icon quiet close" aria-label="关闭大图">×</button>
+    </div>
+    <div id="viewer-stage">
+      <div id="viewer-feedback" role="status"></div>
+      <img id="viewer-image" alt="" draggable="false" hidden>
+      <button id="previous-image" type="button" class="icon viewer-arrow" aria-label="上一张">‹</button>
+      <button id="next-image" type="button" class="icon viewer-arrow" aria-label="下一张">›</button>
+    </div>
+    <div class="viewer-foot">
+      <div><button id="zoom-out" type="button" class="icon" aria-label="缩小">−</button><button id="zoom-reset" type="button">100%</button><button id="zoom-in" type="button" class="icon" aria-label="放大">＋</button></div>
+      <div><button id="viewer-select" type="button">选中</button><button id="viewer-preview" type="button">加载预览</button><button id="viewer-save-preview" type="button" hidden>保存预览</button><button id="viewer-save" type="button" class="primary">保存原图</button></div>
+    </div>
+  </dialog>
+</body>
+</html>
