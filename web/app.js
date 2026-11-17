@@ -670,6 +670,7 @@ function paintBundle() {
 }
 
 function thumbnailSummary(thumbs) {
+  if (!thumbs.saved && !thumbs.failed && !thumbs.cleanup) return "无需补全或清理";
   const parts = ["保存 " + number.format(thumbs.saved) + " 张"];
   if (thumbs.failed) parts.push("失败 " + number.format(thumbs.failed) + " 张");
   if (thumbs.cleanup) {
@@ -702,7 +703,7 @@ function paintThumbnailStatus() {
   el("thumb-sync-progress").hidden = !syncing;
   el("thumb-sync-message").textContent = syncing ? job.message : "";
   paintProgress(el("thumb-progress"));
-  el("sync-thumbs").disabled = busy || submitting || !(counts?.pending || counts?.obsolete);
+  el("sync-thumbs").disabled = busy || submitting;
 }
 
 async function refreshThumbnailStatus() {

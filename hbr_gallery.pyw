@@ -82,7 +82,7 @@ SERVER_INDEX_FILE = TOOL_DIR / "hbr_index_server.json"
 REMOTE_DIR = TOOL_DIR / "remote_q"
 CDN_HOST = "heaven-burns-red-assets.akamaized.net"
 CDN_ROOT = f"https://{CDN_HOST}/prod/assets"
-INDEX_VERSION = 3
+INDEX_VERSION = 4
 
 # 游戏数据目录：默认指向本机游戏路径，也可在 hbr_config.json 里写 {"game_dir": "..."} 覆盖
 _CFG = {}
@@ -352,6 +352,7 @@ def build_index(progress=None, catalog_path=None):
             if not path or not image_like(path):
                 continue
             owners = []
+            volume_only = True
             size = 0
             loc_set = _u32(m, entry + 4)
             try:
@@ -364,7 +365,16 @@ def build_index(progress=None, catalog_path=None):
                     # BundledAssetProvider loads the asset from the first dependency.
                     dep = _u32(m, dep_set)
                     name = read_string(_u32(m, dep), "/")
-                    if not name or not re.fullmatch(r"[\w.-]+\.bundle", name, re.IGNORECASE) or name in owners:
+                    if not name or not re.fullmatch(r"[\w.-]+\.bundle", name, re.IGNORECASE):
+                        continue
+                    if volume_only:
+                        try:
+                            # ResourceLocation's type ID points to an assembly and class name.
+                            type_offset = _u32(m, loc + 24)
+                            volume_only = read_string(_u32(m, type_offset + 4), ".") == "UnityEngine.Texture3D"
+                        except (struct.error, ValueError):
+                            volume_only = False
+                    if name in owners:
                         continue
                     owners.append(name)
                     try:
@@ -383,11 +393,13 @@ def build_index(progress=None, catalog_path=None):
             except (struct.error, ValueError):
                 pass
             if owners:
-                items.append({"p": path, "b": owners,
-                              "s": size, "w": None, "h": None})
+                item = {"p": path, "b": owners, "s": size, "w": None, "h": None}
+                if volume_only:
+                    item["texture3d"] = True
+                items.append(item)
     finally:
         m.close()
-    log(f"扫描完成，找到 {len(items)} 个图片资产。")
+    log(f"扫描完成，找到 {len(items)} 个候选图片资产。")
     return items, cache_keys
 
 
@@ -616,6 +628,9 @@ def _asset_token(bundle_token, key):
 def _prepare_items(local, server, available, versions, cache_keys):
     """Merge catalog entries by resource path and retain older local bundle fallbacks."""
     rows, sources = {}, {}
+    # A cached catalog may still include an untyped copy of the same volume texture.
+    volume_paths = {_path_key(entry["p"]) for group in (local, server) for entry in group
+                    if entry.get("texture3d")}
     catalogs = sorted(zip((local, server), versions),
                       key=lambda pair: _version_key(pair[1]) if pair[1] else ())
     for group, version in catalogs:
@@ -623,6 +638,8 @@ def _prepare_items(local, server, available, versions, cache_keys):
             if not entry["b"]:
                 continue
             key = _path_key(entry["p"])
+            if key in volume_paths:
+                continue
             it = rows.setdefault(key, {**entry, "b": [], "key": key})
             it["b"] = list(dict.fromkeys(entry["b"] + it["b"]))
             if version:
@@ -1050,7 +1067,8 @@ def _cleanup_thumbnails(names, counts):
 def _sync_thumbnails(cleanup=False):
     counts, items, obsolete = _thumbnail_inventory(include_obsolete=cleanup)
     total = counts["pending"]
-    if not total and not obsolete:
+    # A manual check should record its result even when the cache needs no work.
+    if not total and not cleanup:
         return {"saved": 0, "failed": 0}
     cleanup_result = _cleanup_thumbnails(obsolete, counts) if obsolete else None
     items.sort(key=lambda item: item["available"][0])
@@ -1388,7 +1406,7 @@ def _start_library_job(action, ids=None, expected_revision=None):
             elif action == "thumbnails":
                 thumbs = _sync_thumbnails(cleanup=True)
                 details = {"thumbs": thumbs}
-                message = "本地缩略图已齐全"
+                message = "缩略图检查完成 · 无需补全或清理"
                 cleanup = thumbs.get("cleanup")
                 if thumbs["saved"] or thumbs["failed"] or cleanup:
                     message = f"缩略图补全结束 · 保存 {thumbs['saved']} 张 · 失败 {thumbs['failed']} 张"
