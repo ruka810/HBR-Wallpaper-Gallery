@@ -20,7 +20,8 @@ let selected = new Set(), folders = [], folderId = null, category = "剧情CG";
 let libraryRevision = 0, output = "", pickerAvailable = false;
 let job = {}, busy = false, submitting = false, status = {};
 let thumbnailStatus = null;
-let completedJob = 0, pendingViewer = null, toastTimer;
+let dateRange = { from: "", to: "" };
+let completedJob = 0, pendingViewer = null, pendingUncheck = null, toastTimer;
 let selectionQueue = Promise.resolve(), selectionUpdates = 0;
 const expanded = new Set(["剧情CG"]);
 const failedThumbs = new Set();
@@ -94,16 +95,21 @@ function navChildrenId(path) {
   return "nav-children-" + encodeURIComponent(path);
 }
 
+function categoryCaret(label, open, childrenId) {
+  const caret = element("button", "caret");
+  caret.type = "button";
+  caret.setAttribute("aria-expanded", open);
+  caret.setAttribute("aria-label", (open ? "收起" : "展开") + label);
+  caret.setAttribute("aria-controls", childrenId);
+  caret.append(element("span", "caret-symbol"));
+  return caret;
+}
+
 function navRow(label, count, active, onClick, branch) {
   const row = element("div", "nav-row");
   if (branch?.children.size) {
     const open = expanded.has(branch.path);
-    const caret = element("button", "caret");
-    caret.type = "button";
-    caret.setAttribute("aria-expanded", open);
-    caret.setAttribute("aria-label", (open ? "收起" : "展开") + label);
-    caret.setAttribute("aria-controls", navChildrenId(branch.path));
-    caret.append(element("span", "caret-symbol"));
+    const caret = categoryCaret(label, open, navChildrenId(branch.path));
     caret.addEventListener("click", () => {
       if (open) expanded.delete(branch.path);
       else expanded.add(branch.path);
@@ -124,6 +130,14 @@ function navRow(label, count, active, onClick, branch) {
   return row;
 }
 
+function topCategories() {
+  return categoryOrder.map(name => categoryTree.get(name)).filter(Boolean);
+}
+
+function childCategories(row) {
+  return [...row.children.values()].sort((left, right) => order.compare(left.part, right.part));
+}
+
 function renderNavigation(focusPath = null) {
   const categories = document.createDocumentFragment();
   categories.append(navRow("全部图片", images.length, !folderId && !category, () => showCategory("")));
@@ -139,13 +153,13 @@ function renderNavigation(focusPath = null) {
         children.setAttribute("aria-label", label);
         children.hidden = !expanded.has(row.path);
         if (!children.hidden) {
-          walk(children, [...row.children.values()].sort((left, right) => order.compare(left.part, right.part)));
+          walk(children, childCategories(row));
         }
         parent.append(children);
       }
     }
   }
-  walk(categories, categoryOrder.map(name => categoryTree.get(name)).filter(Boolean));
+  walk(categories, topCategories());
   el("categories").replaceChildren(categories);
   if (focusPath) {
     [...el("categories").querySelectorAll("[data-path]")].find(node => node.dataset.path === focusPath)?.focus();
@@ -176,6 +190,7 @@ function applyFilters(resetScroll = false) {
   const terms = searchText(el("search").value).split(" ").filter(Boolean);
   const availability = el("availability").value;
   const wallpaper = el("wallpaper").checked;
+  const { from, to } = dateRange;
   filtered = images.filter(item => {
     if (set) {
       if (!set.has(item.id)) return false;
@@ -183,6 +198,8 @@ function applyFilters(resetScroll = false) {
       return false;
     }
     if (terms.length && !terms.every(term => item.search.includes(term) || item.compact.includes(term))) return false;
+    if ((from || to) && (!item.release_date || (from && item.release_date < from) ||
+        (to && item.release_date > to))) return false;
     if (wallpaper && !(item.w >= 1920 && item.h >= 1080)) return false;
     if (availability === "local") return !item.missing;
     if (availability === "remote") return item.downloadable;
@@ -230,6 +247,39 @@ el("search").addEventListener("input", () => {
 for (const id of ["availability", "sort", "wallpaper"]) {
   el(id).addEventListener("change", () => applyFilters(true));
 }
+
+const dateDialog = el("date-dialog");
+el("open-date-filter").onclick = () => {
+  el("date-from").value = dateRange.from;
+  el("date-to").value = dateRange.to;
+  formError("date-filter-error");
+  formError("date-sync-error");
+  dateDialog.showModal();
+};
+
+function setDateRange(from, to) {
+  dateRange = { from, to };
+  el("open-date-filter").toggleAttribute("data-active", Boolean(from || to));
+  el("date-filter-value").textContent = from && to ? from + " 至 " + to : from ? "自 " + from : to ? "至 " + to : "";
+  dateDialog.close();
+  applyFilters(true);
+}
+
+el("date-form").onsubmit = event => {
+  event.preventDefault();
+  const from = el("date-from").value;
+  const to = el("date-to").value;
+  if (from && to && from > to) {
+    formError("date-filter-error", "开始日期须早于或等于结束日期。");
+    return;
+  }
+  setDateRange(from, to);
+};
+el("clear-date-filter").onclick = () => setDateRange("", "");
+el("sync-release-dates").onclick = () => {
+  formError("date-sync-error");
+  buttonTask("dates");
+};
 
 function previewSource(item) {
   if (!item) return null;
@@ -320,7 +370,7 @@ function createCard(item, source) {
   } else if (canLoadPreview(item)) {
     placeholder.textContent = "加载预览";
     media.setAttribute("aria-label", "加载预览 " + item.name);
-    media.onclick = () => requestTask("preview", [item.id], item.id);
+    media.onclick = () => requestTask("preview", [item.id], { previewId: item.id });
   } else {
     placeholder.textContent = "暂无可用预览";
     media.disabled = true;
@@ -343,7 +393,7 @@ function createCard(item, source) {
   const text = element("div", "card-text");
   const title = element("span", "card-title", item.name);
   title.title = item.p;
-  const size = element("span", "card-size", itemSize(item));
+  const size = element("span", "card-size", cardDetails(item));
   text.append(title, size);
   const save = element("button", "card-save quiet", "保存");
   save.type = "button";
@@ -360,13 +410,21 @@ function itemSize(item) {
   return item.w && item.h ? item.w + " × " + item.h : item.language || "";
 }
 
+function releaseLabel(item) {
+  return item.release_date ? (item.kind === "card" ? "上线 " : "活动上线 ") + item.release_date : "";
+}
+
+function cardDetails(item) {
+  return [releaseLabel(item), itemSize(item)].filter(Boolean).join(" · ");
+}
+
 function thumbKey(source) {
   return source.id + "-" + source.token;
 }
 
 function paintThumb(card, url) {
   if (card.img.getAttribute("src") !== url) card.img.src = url;
-  card.size.textContent = itemSize(card.item);
+  card.size.textContent = cardDetails(card.item);
 }
 
 function rememberThumb(key, blob) {
@@ -551,17 +609,18 @@ function detailsList(title, rows) {
   return block;
 }
 
-function buttonTask(action, ids) {
-  requestTask(action, ids).catch(error => { notify(error.message); });
+function buttonTask(action, ids, options) {
+  requestTask(action, ids, options).catch(error => { notify(error.message); });
 }
 
-async function requestTask(action, ids = [], previewId = null) {
+async function requestTask(action, ids = [], { previewId = null, categories, uncheck = false } = {}) {
   const needsImages = action === "preview" || action === "export";
   if (busy || submitting || (needsImages && !ids.length)) return;
   submitting = true;
   updateActions();
   try {
     const request = { action, ids };
+    if (categories) request.categories = categories;
     if (needsImages) {
       const estimate = await api("/estimate", { action, ids });
       request.revision = estimate.revision;
@@ -577,10 +636,12 @@ async function requestTask(action, ids = [], previewId = null) {
     job = await api("/jobs", request);
     busy = true;
     if (previewId !== null) pendingViewer = { jobId: job.id, imageId: previewId };
+    pendingUncheck = uncheck ? { jobId: job.id, ids } : null;
     paintTask();
   } catch (error) {
     const message = "无法启动任务 · " + error.message;
     if (action === "thumbnails" && el("thumb-status-dialog").open) formError("thumb-status-error", message);
+    else if (action === "dates" && dateDialog.open) formError("date-sync-error", message);
     else notify(message);
   } finally {
     submitting = false;
@@ -591,9 +652,15 @@ async function requestTask(action, ids = [], previewId = null) {
 function updateActions() {
   const locked = busy || submitting;
   el("refresh").disabled = el("refresh-dialog").disabled = locked;
+  el("download-categories").disabled = locked || !categoryTree.size;
+  el("sync-release-dates").disabled = locked;
+  const dateStatus = el("date-sync-status");
+  const dateMessage = job.action === "dates" ? job.message : "";
+  if (dateStatus.textContent !== dateMessage) dateStatus.textContent = dateMessage;
   if (el("thumb-status-dialog").open) paintThumbnailStatus();
   el("selection-count").textContent = "已选 " + number.format(selected.size) + " 张";
   el("selection-bar").hidden = !selected.size;
+  el("clear-selection").disabled = !selected.size;
   el("select-filtered").disabled = !filtered.length || filtered.every(item => selected.has(item.id));
   const selectedImages = [...selected];
   el("batch-preview").disabled = locked || !selectedImages.some(id => canLoadPreview(byId.get(id)));
@@ -626,11 +693,121 @@ el("refresh-dialog").onclick = () => {
   el("bundle-dialog").close();
   buttonTask("refresh", []);
 };
-el("batch-save").onclick = () => buttonTask("export", [...selected]);
-el("batch-preview").onclick = () => buttonTask("preview", [...selected].filter(id => canLoadPreview(byId.get(id))));
+el("batch-save").onclick = () => buttonTask("export", [...selected], { uncheck: true });
+el("batch-preview").onclick = () =>
+  buttonTask("preview", [...selected].filter(id => canLoadPreview(byId.get(id))), { uncheck: true });
 el("bundle-open").onclick = () => {
   paintBundle();
   el("bundle-dialog").showModal();
+};
+
+const categoryTaskDialog = el("category-task-dialog");
+let categoryTaskAction, categoryTaskRows = [];
+
+function categoryCheckbox(label, count) {
+  const node = element("label");
+  const input = element("input");
+  input.type = "checkbox";
+  const total = element("span", "nav-count", number.format(count));
+  total.setAttribute("aria-hidden", "true");
+  node.append(input, element("span", "", label), total);
+  return { node, input };
+}
+
+function categoryTaskRow(row) {
+  const label = categoryLabel(row.part);
+  const node = element("div");
+  const line = element("div", "category-task-row");
+  const checkbox = categoryCheckbox(label, row.count);
+  const children = childCategories(row).map(categoryTaskRow);
+  const direct = row.count - children.reduce((count, child) => count + child.row.count, 0);
+  let own = null;
+  if (children.length) {
+    const group = element("div", "category-task-children");
+    group.id = "category-task-children-" + encodeURIComponent(row.path);
+    group.hidden = true;
+    const caret = categoryCaret(label, false, group.id);
+    caret.onclick = () => {
+      group.hidden = !group.hidden;
+      caret.setAttribute("aria-expanded", !group.hidden);
+      caret.setAttribute("aria-label", (group.hidden ? "展开" : "收起") + label);
+    };
+    line.append(caret);
+    if (direct) {
+      const ownCheckbox = categoryCheckbox("此目录直属图片", direct);
+      const ownRow = element("div", "category-task-row");
+      own = ownCheckbox.input;
+      ownRow.append(element("span", "caret-spacer"), ownCheckbox.node);
+      group.append(ownRow);
+    }
+    group.append(...children.map(child => child.node));
+    node.append(line, group);
+  } else {
+    line.append(element("span", "caret-spacer"));
+    node.append(line);
+  }
+  line.append(checkbox.node);
+  const branch = { row, node, input: checkbox.input, own, direct, children };
+  checkbox.input.onchange = () => setCategoryTaskBranch(branch, checkbox.input.checked);
+  return branch;
+}
+
+function setCategoryTaskBranch(branch, checked) {
+  branch.input.checked = checked;
+  if (branch.own) branch.own.checked = checked;
+  branch.children.forEach(child => setCategoryTaskBranch(child, checked));
+}
+
+function countCategoryTaskBranch(branch) {
+  if (!branch.children.length) return branch.input.checked ? branch.row.count : 0;
+  const count = branch.children.reduce((sum, child) => sum + countCategoryTaskBranch(child),
+    branch.own?.checked ? branch.direct : 0);
+  branch.input.checked = count === branch.row.count;
+  branch.input.indeterminate = count > 0 && !branch.input.checked;
+  return count;
+}
+
+function collectCategoryScopes(branch, scopes) {
+  if (branch.input.checked) {
+    scopes.push(branch.row.path + "/");
+  } else if (branch.input.indeterminate) {
+    if (branch.own?.checked) scopes.push(branch.row.path);
+    branch.children.forEach(child => collectCategoryScopes(child, scopes));
+  }
+}
+
+function updateCategoryTaskCount() {
+  const count = categoryTaskRows.reduce((sum, row) => sum + countCategoryTaskBranch(row), 0);
+  el("category-task-count").textContent = "已选 " + number.format(count) + " 张";
+  el("category-task-submit").disabled = !count;
+}
+
+function openCategoryTask(action) {
+  categoryTaskAction = action;
+  const isDownload = action === "refresh";
+  el("category-task-title").textContent = isDownload ? "按分类下载 Bundle" : "按分类补全缩略图";
+  el("category-task-hint").textContent = isDownload ?
+    "勾选想下载的目录。共享的 Bundle 只下载一次，并补全所选目录中可用的缩略图。" :
+    "勾选想补全的目录。使用本机已有资源，跳过已缓存的缩略图。";
+  el("category-task-submit").textContent = isDownload ? "下载所选目录" : "补全所选目录";
+  categoryTaskRows = topCategories().map(categoryTaskRow);
+  el("category-task-tree").replaceChildren(...categoryTaskRows.map(row => row.node));
+  updateCategoryTaskCount();
+  categoryTaskDialog.showModal();
+}
+
+el("download-categories").onclick = () => openCategoryTask("refresh");
+el("thumb-categories").onclick = () => openCategoryTask("thumbnails");
+el("category-task-tree").onchange = updateCategoryTaskCount;
+el("category-task-form").onsubmit = event => {
+  event.preventDefault();
+  const categories = [];
+  categoryTaskRows.forEach(row => collectCategoryScopes(row, categories));
+  if (!categories.length || busy || submitting) return;
+  categoryTaskDialog.close();
+  if (categoryTaskAction === "refresh") el("bundle-dialog").close();
+  else formError("thumb-status-error");
+  buttonTask(categoryTaskAction, [], { categories });
 };
 
 function paintCounts(id, entries, values) {
@@ -656,7 +833,7 @@ function paintBundle() {
     return;
   }
   const time = new Date(last.time * 1000).toLocaleString("zh-CN");
-  summary.append(element("p", "", time + " · " + last.message),
+  summary.append(element("p", "", time + (last.scoped ? " · 按分类下载" : "") + " · " + last.message),
     element("p", "", "清理 " + number.format(last.removed) + " 个重复副本，释放 " + byteSize(last.bytes)));
   if (typeof last.downloaded === "number") {
     summary.append(element("p", "", "下载 " + number.format(last.downloaded) + " 个 Bundle"));
@@ -690,20 +867,23 @@ function paintProgress(progress) {
 
 function paintThumbnailStatus() {
   const syncing = busy && (job.action === "thumbnails" || job.thumbnail_counts);
-  const counts = (syncing && job.thumbnail_counts) || thumbnailStatus?.counts;
-  paintCounts("thumb-counts", [["total", "图库图片"], ["cached", "已缓存"],
+  const currentCounts = syncing && job.thumbnail_counts;
+  const counts = currentCounts || thumbnailStatus?.counts;
+  paintCounts("thumb-counts", [["total", currentCounts && job.categories ? "所选图片" : "图库图片"], ["cached", "已缓存"],
     ["pending", "待补全"], ["unavailable", "暂不能补全"], ["obsolete", "待清理"]], counts);
   const last = thumbnailStatus?.last_sync;
   const summary = el("thumb-last-sync");
   summary.textContent = thumbnailStatus ? "暂无同步记录。" : "";
   if (last) {
-    summary.replaceChildren(element("p", "", "上次同步 " + new Date(last.time * 1000).toLocaleString("zh-CN")),
+    summary.replaceChildren(element("p", "", "上次同步 " + new Date(last.time * 1000).toLocaleString("zh-CN") +
+      (last.scoped ? " · 所选分类" : "")),
       element("p", "", thumbnailSummary(last)));
   }
   el("thumb-sync-progress").hidden = !syncing;
-  el("thumb-sync-message").textContent = syncing ? job.message : "";
+  el("thumb-sync-message").textContent = syncing ? (job.categories ? "所选分类 · " : "") + job.message : "";
   paintProgress(el("thumb-progress"));
   el("sync-thumbs").disabled = busy || submitting;
+  el("thumb-categories").disabled = busy || submitting || !categoryTree.size;
 }
 
 async function refreshThumbnailStatus() {
@@ -763,7 +943,10 @@ el("task-detail").onclick = () => {
 };
 el("retry").onclick = () => {
   el("task-dialog").close();
-  buttonTask(job.action, job.failed_ids || []);
+  buttonTask(job.action, job.failed_ids || [], {
+    categories: job.categories,
+    uncheck: pendingUncheck?.jobId === job.id
+  });
 };
 el("open-task-output").onclick = () => api("/openout", { job: job.id }).catch(error => notify(error.message));
 
@@ -791,6 +974,11 @@ async function pollStatus() {
     updateActions();
     if (job.id && job.id > completedJob && !busy) {
       completedJob = job.id;
+      if (pendingUncheck?.jobId === job.id && job.status === "done") {
+        const failed = new Set(job.failed_ids);
+        const done = pendingUncheck.ids.filter(id => selected.has(id) && !failed.has(id));
+        if (done.length) updateSelection("remove", done);
+      }
       if (pendingViewer?.jobId === job.id) {
         const target = byId.get(pendingViewer.imageId);
         pendingViewer = null;
@@ -956,6 +1144,7 @@ el("apply-folders").onclick = async () => {
       setFolders(await api("/collections", { action: "add", id: choice.value, ids }));
       changed++;
     }
+    updateSelection("remove", ids);
     el("add-dialog").close();
     notify("已加入 " + changed + " 个收藏夹");
   } catch (error) {
@@ -968,8 +1157,11 @@ el("apply-folders").onclick = async () => {
 el("remove-from-folder").onclick = async () => {
   const folder = currentFolder();
   if (!folder) return;
+  const ids = folder.ids.filter(id => selected.has(id));
+  if (!ids.length) return;
   try {
-    setFolders(await api("/collections", { action: "remove", id: folder.id, ids: [...selected] }));
+    setFolders(await api("/collections", { action: "remove", id: folder.id, ids }));
+    updateSelection("remove", ids);
     notify("已从「" + folder.name + "」移除选中的图片");
   } catch (error) { notify(error.message); }
 };
@@ -1045,7 +1237,7 @@ async function refreshViewer(id, reset) {
   el("viewer-title").textContent = item.name;
   el("viewer-title").title = item.p;
   const meta = el("viewer-meta");
-  meta.textContent = [label, itemSize(source || item)].filter(Boolean).join(" · ");
+  meta.textContent = [label, itemSize(source || item), releaseLabel(item)].filter(Boolean).join(" · ");
   viewerImage.alt = item.name;
   paintViewerActions();
   if (!source) {
@@ -1101,7 +1293,7 @@ viewerImage.addEventListener("load", () => {
   source.w = viewerImage.naturalWidth;
   source.h = viewerImage.naturalHeight;
   const label = item.kind === "gallery" || source.id !== item.id ? "游戏预览" : "原图";
-  el("viewer-meta").textContent = label + " · " + itemSize(source);
+  el("viewer-meta").textContent = [label, itemSize(source), releaseLabel(item)].filter(Boolean).join(" · ");
 });
 viewerImage.addEventListener("error", () => {
   if (!fullObjectUrl) viewerImage.hidden = true;
@@ -1109,7 +1301,7 @@ viewerImage.addEventListener("error", () => {
 el("previous-image").onclick = () => navigateViewer(-1);
 el("next-image").onclick = () => navigateViewer(1);
 el("viewer-select").onclick = () => updateSelection(selected.has(viewerId) ? "remove" : "add", [viewerId]);
-el("viewer-preview").onclick = () => requestTask("preview", [viewerId], viewerId);
+el("viewer-preview").onclick = () => requestTask("preview", [viewerId], { previewId: viewerId });
 el("viewer-save").onclick = () => buttonTask("export", [viewerId]);
 el("zoom-in").onclick = () => zoom(1.2);
 el("zoom-out").onclick = () => zoom(1 / 1.2);

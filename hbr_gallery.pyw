@@ -32,6 +32,7 @@ import webbrowser
 from urllib.request import Request, urlopen
 from collections import OrderedDict, defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
 from functools import lru_cache
 from uuid import uuid4
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -79,6 +80,11 @@ PREFERENCES_FILE = TOOL_DIR / "hbr_preferences.json"
 WEB_DIR = TOOL_DIR / "web"
 CONFIG_FILE = TOOL_DIR / "hbr_config.json"           # 可选：游戏数据目录/缓存目录配置
 SERVER_INDEX_FILE = TOOL_DIR / "hbr_index_server.json"
+RELEASE_DATES_SEED = TOOL_DIR / "data" / "release_dates.json"
+RELEASE_DATES_CACHE = TOOL_DIR / "hbr_release_dates.json"
+RELEASE_DATES_ROOT = "https://master.hbr.quest/v1/"
+RELEASE_DATES_TABLES = {"cards": "styles", "events": "events"}
+JAPAN_TIME = timezone(timedelta(hours=9))
 REMOTE_DIR = TOOL_DIR / "remote_q"
 CDN_HOST = "heaven-burns-red-assets.akamaized.net"
 CDN_ROOT = f"https://{CDN_HOST}/prod/assets"
@@ -422,6 +428,78 @@ def _read_index_cache(path):
     except (OSError, ValueError):
         pass
     return {"items": []}
+
+
+def _fetch_release_dates(group):
+    table = RELEASE_DATES_TABLES[group]
+    request = Request(f"{RELEASE_DATES_ROOT}{table}.json", headers={
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/134.0.0.0 Safari/537.36",
+    })
+    limit = 24 * 1024 * 1024
+    with urlopen(request, timeout=12) as response:
+        body = response.read(limit + 1)
+    if len(body) > limit:
+        raise ValueError("上线日期表超出大小限制")
+    rows = json.loads(body)
+    if not isinstance(rows, list):
+        raise ValueError("上线日期表格式无效")
+    dates = {}
+    for row in rows:
+        if not isinstance(row, dict) or not isinstance(row.get("in_date"), str):
+            continue
+        if group == "cards":
+            match = re.fullmatch(r"([a-z0-9_]+)\.webp", str(row.get("bg")), re.IGNORECASE)
+            if not match:
+                continue
+            key = match[1].casefold()
+        else:
+            # Original events use SideEvent.AC0001 in the table and AC01 in the image index.
+            match = re.fullmatch(r"SideEvent\.([a-z]{2})(\d{4})", str(row.get("label")), re.IGNORECASE)
+            if not match:
+                continue
+            key = f"{match[1].casefold()}{int(match[2]):02d}"
+        try:
+            stamp = datetime.fromisoformat(row["in_date"])
+            if stamp.tzinfo is None:
+                continue
+            day = stamp.astimezone(JAPAN_TIME).date().isoformat()
+        except (ValueError, OverflowError):
+            continue
+        dates[key] = min(day, dates.get(key, day))
+    if not dates:
+        raise ValueError(f"上线日期表没有可用记录 · {table}")
+    return dict(sorted(dates.items()))
+
+
+def _sync_release_dates():
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        dates = dict(zip(RELEASE_DATES_TABLES, executor.map(_fetch_release_dates, RELEASE_DATES_TABLES)))
+    _write_json(RELEASE_DATES_CACHE, dates)
+
+
+def _read_release_dates():
+    for path in (RELEASE_DATES_CACHE, RELEASE_DATES_SEED):
+        try:
+            dates = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(dates, dict) and all(
+                isinstance(dates.get(group), dict) and dates[group] for group in RELEASE_DATES_TABLES
+            ):
+                return dates
+        except (OSError, ValueError):
+            pass
+    return {"cards": {}, "events": {}}
+
+
+def _image_release_date(item, dates):
+    if item["kind"] == "card" and not item["c"].startswith("角色卡面/对决/"):
+        path = _path_key(item["p"]).split("/")
+        stem = path[-1].rsplit(".", 1)[0]
+        return dates["cards"].get(stem) or dates["cards"].get(path[-2])
+    if item["kind"] in ("cg", "gallery"):
+        chapter = item["c"].rsplit("/", 1)[-1].casefold()
+        return dates["events"].get(chapter)
+    return None
 
 
 def _catalog_signature(path):
@@ -949,8 +1027,29 @@ def _cached_thumbnail_files():
     return files
 
 
-def _thumbnail_inventory(include_obsolete=False):
+def _category_items(categories):
+    """A trailing slash selects a subtree. Bare paths select only direct images."""
     items = ITEMS
+    if categories is None:
+        return items
+    scopes = set(categories)
+
+    def matches(path):
+        if path in scopes:
+            return True
+        while path:
+            if path + "/" in scopes:
+                return True
+            path = path.rpartition("/")[0]
+        return False
+
+    selected = {path for path in {item["c"] for item in items} if matches(path)}
+    return [item for item in items if item["c"] in selected]
+
+
+def _thumbnail_inventory(include_obsolete=False, categories=None):
+    items = _category_items(categories)
+    include_obsolete = include_obsolete and categories is None
     files = _cached_thumbnail_files()
     pending = []
     cached = unavailable = 0
@@ -1064,8 +1163,8 @@ def _cleanup_thumbnails(names, counts):
     return {"removed": removed, "bytes": released, "skipped": skipped}
 
 
-def _sync_thumbnails(cleanup=False):
-    counts, items, obsolete = _thumbnail_inventory(include_obsolete=cleanup)
+def _sync_thumbnails(cleanup=False, categories=None):
+    counts, items, obsolete = _thumbnail_inventory(include_obsolete=cleanup, categories=categories)
     total = counts["pending"]
     # A manual check should record its result even when the cache needs no work.
     if not total and not cleanup:
@@ -1118,6 +1217,8 @@ def _sync_thumbnails(cleanup=False):
             _library_job["revision"] += 1
         persist_info(force=True)
     result = {"saved": saved, "failed": done - saved}
+    if categories is not None:
+        result["scoped"] = True
     if cleanup_result is not None:
         result["cleanup"] = cleanup_result
     if done == total and not _stopping.is_set():
@@ -1329,7 +1430,7 @@ def _job_progress(message, **details):
         _library_job.update(message=message, **details)
 
 
-def _run_refresh():
+def _run_refresh(categories=None):
     warnings = []
     server_catalog = None
     try:
@@ -1348,7 +1449,11 @@ def _run_refresh():
         with _library_lock:
             _inventory["download"] -= cleanup["removed"]
 
-    sources = _download_sources.copy()
+    if categories is None:
+        sources = _download_sources.copy()
+    else:
+        names = {item["download"] for item in _category_items(categories)}
+        sources = {name: source for name, source in _download_sources.items() if name in names}
     failures = {}
     if sources:
         _job_progress(f"正在下载待补齐的 Bundle · 0/{len(sources)}", done=0, total=len(sources))
@@ -1360,10 +1465,12 @@ def _run_refresh():
             failures = dict.fromkeys(sources, str(exc))
         _publish_scan(load_library(server_catalog=False))
 
-    thumbs = _sync_thumbnails()
+    thumbs = _sync_thumbnails(categories=categories)
     downloaded = len(sources) - len(failures)
     summary = {"time": time.time(), "message": message, "warnings": warnings,
                "downloaded": downloaded, "bundle_failures": failures, "thumbs": thumbs, **cleanup}
+    if categories is not None:
+        summary["scoped"] = True
     try:
         with _state_lock:
             _save_preferences(last_check=summary)
@@ -1371,7 +1478,8 @@ def _run_refresh():
         warnings.append(f"检查结果无法写入设置 · {exc}")
         with _state_lock:
             _preferences["last_check"] = summary
-    result = f"Bundle 状态已更新 · 下载 {downloaded} 个 · 清理 {cleanup['removed']} 个"
+    title = "所选分类 Bundle 状态已更新" if categories is not None else "Bundle 状态已更新"
+    result = f"{title} · 下载 {downloaded} 个 · 清理 {cleanup['removed']} 个"
     if failures:
         result += f" · 下载失败 {len(failures)} 个"
     if thumbs["saved"] or thumbs["failed"]:
@@ -1384,16 +1492,19 @@ def _run_refresh():
                     "bundle_failures": failures, "thumbs": thumbs}
 
 
-def _start_library_job(action, ids=None, expected_revision=None):
+def _start_library_job(action, ids=None, expected_revision=None, categories=None):
     with _library_lock:
         if _library_job["status"] == "running":
             return None
         if expected_revision is not None and expected_revision != _library_job["revision"]:
             raise ValueError("Bundle 状态已改变，请重新提交此操作")
         message = {"refresh": "正在核对服务器资源目录", "thumbnails": "正在检查本地缩略图缓存",
+                   "dates": "正在同步上线日期",
                    "export": "正在准备保存", "preview": "正在准备加载预览"}[action]
         job = {"id": _library_job["id"] + 1, "status": "running", "message": message,
                "revision": _library_job["revision"], "action": action}
+        if categories is not None:
+            job["categories"] = categories
         _library_job.clear()
         _library_job.update(job)
     with _state_lock:
@@ -1402,9 +1513,14 @@ def _start_library_job(action, ids=None, expected_revision=None):
     def run():
         try:
             if action == "refresh":
-                message, details = _run_refresh()
+                message, details = _run_refresh(categories)
+            elif action == "dates":
+                _sync_release_dates()
+                with _library_lock:
+                    _library_job["revision"] += 1
+                message, details = "上线日期已更新", {}
             elif action == "thumbnails":
-                thumbs = _sync_thumbnails(cleanup=True)
+                thumbs = _sync_thumbnails(cleanup=True, categories=categories)
                 details = {"thumbs": thumbs}
                 message = "缩略图检查完成 · 无需补全或清理"
                 cleanup = thumbs.get("cleanup")
@@ -1414,6 +1530,8 @@ def _start_library_job(action, ids=None, expected_revision=None):
                     message += f" · 清理 {cleanup['removed']} 张"
                     if cleanup["skipped"]:
                         message += f" · 跳过 {cleanup['skipped']} 张"
+                if categories is not None:
+                    message = "所选分类 · " + message
             else:
                 if action == "export":
                     _writable_directory(str(out))
@@ -1451,17 +1569,9 @@ def export_filename(item):
     return safe_component(stem) + ".png"
 
 
-def export_path(item, out_root):
-    return out_root.joinpath(*(safe_component(part) for part in item["c"].split("/")),
-                             export_filename(item))
-
-
-
 def _export_one(item, root):
-    destination = export_path(item, root)
-    folder = _export_directory(str(destination.parent))
-    if not folder.is_relative_to(root.resolve()):
-        raise ValueError("分类目录指向输出目录之外")
+    folder = _export_directory(str(root))
+    destination = folder / export_filename(item)
     key = item["key"]
     token = item["token"]
     if destination.is_file() and not destination.is_symlink():
@@ -1507,7 +1617,7 @@ def _export_one(item, root):
                             return "skipped"
                 except (OSError, PILImage.DecompressionBombError):
                     continue
-        raise OSError("分类目录中有过多同名文件")
+        raise OSError("保存目录中有过多同名文件")
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -1564,6 +1674,11 @@ def index_payload():
                  {"new": item.get("new", 0), "cached": item["id"] in _thumb_ready,
                   "downloadable": bool(item["download"])} for item in ITEMS]
         revision = _library_job["revision"]
+    dates = _read_release_dates()
+    for item in items:
+        day = _image_release_date(item, dates)
+        if day:
+            item["release_date"] = day
     return {"items": items, "revision": revision}
 
 
@@ -1763,7 +1878,8 @@ class Handler(BaseHTTPRequestHandler):
                 _picker_lock.release()
         elif path in {"/estimate", "/jobs"}:
             action = body.get("action")
-            allowed = ("preview", "export") if path == "/estimate" else ("preview", "export", "refresh", "thumbnails")
+            allowed = ("preview", "export") if path == "/estimate" else (
+                "preview", "export", "refresh", "thumbnails", "dates")
             if action not in allowed:
                 raise ValueError("未知图库操作")
             ids = _ids(body)
@@ -1772,7 +1888,14 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/estimate":
                 result = _estimate(action, ids)
             else:
-                job = _start_library_job(action, ids, body.get("revision"))
+                categories = None
+                if "categories" in body:
+                    values = body["categories"]
+                    if (action not in {"refresh", "thumbnails"} or not isinstance(values, list) or
+                            not values or any(not isinstance(value, str) or not value.strip() for value in values)):
+                        raise ValueError("请至少勾选一个有效的图库分类")
+                    categories = list(dict.fromkeys(values))
+                job = _start_library_job(action, ids, body.get("revision"), categories)
                 if job is None:
                     self._json({"error": "图库正在运行另一项任务"}, 409)
                 else:

@@ -50,8 +50,12 @@
             <option value="new">最近新增</option><option value="size">分辨率</option>
           </select>
           <label class="filter-check"><input type="checkbox" id="wallpaper"> 1080p 以上</label>
+          <button id="open-date-filter" type="button" aria-haspopup="dialog" aria-controls="date-dialog">上线日期<span id="date-filter-value"></span></button>
         </div>
-        <div class="results-line"><p id="result-count" aria-live="polite"></p><button id="select-filtered" type="button" class="quiet">全选筛选结果</button></div>
+        <div class="results-line">
+          <p id="result-count" aria-live="polite"></p>
+          <div class="results-actions"><button id="clear-selection" type="button" class="quiet" disabled>清空已选</button><button id="select-filtered" type="button" class="quiet">全选筛选结果</button></div>
+        </div>
       </div>
       <div id="task-strip" class="task-strip" role="status" hidden>
         <div><strong id="task-message"></strong><progress id="task-progress" aria-label="任务进度" hidden></progress></div>
@@ -62,7 +66,7 @@
         <div id="grid" aria-label="图片网格"></div>
       </div>
       <div id="selection-bar" class="selection-bar" hidden>
-        <div><strong id="selection-count"></strong><button id="clear-selection" type="button" class="quiet">清空已选</button></div>
+        <strong id="selection-count"></strong>
         <div class="batch-actions">
           <button id="batch-preview" type="button">批量加载预览</button>
           <button id="add-to-folder" type="button">加入收藏夹</button>
@@ -74,11 +78,30 @@
   </div>
   <div id="toast" class="toast" role="status" hidden></div>
 
+  <dialog id="date-dialog" aria-labelledby="date-title">
+    <div class="dialog-head"><h2 id="date-title">上线日期</h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
+    <form id="date-form">
+      <div class="date-fields">
+        <label for="date-from">开始日期<input id="date-from" type="date" max="9999-12-31"></label>
+        <label for="date-to">结束日期<input id="date-to" type="date" max="9999-12-31"></label>
+      </div>
+      <p class="subtle">按日服卡面或活动首次上线日期筛选，含起止当天。日期未知的图片仅在清除日期筛选后显示。</p>
+      <p id="date-filter-error" class="form-error" role="alert" hidden></p>
+      <p id="date-sync-error" class="form-error" role="alert" hidden></p>
+      <p id="date-sync-status" class="subtle" role="status"></p>
+      <div class="dialog-actions">
+        <button id="sync-release-dates" type="button" class="quiet">从 Seraph Database 同步日期</button>
+        <button id="clear-date-filter" type="button">清除筛选</button>
+        <button type="submit" class="primary">应用</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="settings-dialog" aria-labelledby="settings-title">
     <div class="dialog-head"><h2 id="settings-title">设置</h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
     <label for="output-path">图片保存目录</label>
     <div class="directory"><input id="output-path" type="text" spellcheck="false" autocomplete="off"><button id="pick-folder" type="button">浏览…</button></div>
-    <p class="subtle">图片按分类存为 PNG。单张和批量保存共用此目录。</p>
+    <p class="subtle">单张和批量保存的 PNG 都直接写入此目录。</p>
     <p class="form-error" id="settings-error" role="alert" hidden></p>
     <div class="dialog-actions"><button id="reset-output" type="button" class="quiet">恢复默认</button><button id="open-output" type="button">打开已设置目录</button><button id="save-output" type="button" class="primary">保存设置</button></div>
   </dialog>
@@ -87,7 +110,7 @@
     <div class="dialog-head"><h2 id="bundle-title">Bundle 状态</h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
     <dl id="bundle-counts" class="bundle-counts"></dl>
     <div id="last-check" class="check-summary"></div>
-    <div class="dialog-actions"><button id="refresh-dialog" type="button" class="primary">更新 Bundle 状态</button></div>
+    <div class="dialog-actions"><button id="download-categories" type="button" disabled>按分类下载</button><button id="refresh-dialog" type="button" class="primary">更新 Bundle 状态</button></div>
   </dialog>
 
   <dialog id="thumb-status-dialog" aria-labelledby="thumb-status-title">
@@ -99,7 +122,20 @@
       <progress id="thumb-progress" aria-label="缩略图补全进度"></progress>
     </div>
     <p id="thumb-status-error" class="form-error" role="alert" hidden></p>
-    <div class="dialog-actions"><button id="sync-thumbs" type="button" class="primary" disabled>一键补全缩略图</button></div>
+    <div class="dialog-actions"><button id="thumb-categories" type="button" disabled>按分类补全</button><button id="sync-thumbs" type="button" class="primary" disabled>一键补全缩略图</button></div>
+  </dialog>
+
+  <dialog id="category-task-dialog" aria-labelledby="category-task-title">
+    <div class="dialog-head"><h2 id="category-task-title"></h2><button type="button" class="icon quiet close" aria-label="关闭">×</button></div>
+    <p id="category-task-hint" class="subtle"></p>
+    <form id="category-task-form">
+      <div id="category-task-tree" class="category-task-tree" role="group" aria-label="图库分类"></div>
+      <div class="dialog-actions">
+        <p id="category-task-count" class="subtle" role="status"></p>
+        <button type="button" class="close">取消</button>
+        <button id="category-task-submit" type="submit" class="primary" disabled></button>
+      </div>
+    </form>
   </dialog>
 
   <dialog id="folder-dialog" aria-labelledby="folder-title">
